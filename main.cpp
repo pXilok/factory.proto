@@ -63,7 +63,7 @@ struct Particle {
 struct FloatText {
     float x, y, z;
     float life;
-    char text[24];
+    char text[32];
     Color color;
 };
 
@@ -89,6 +89,9 @@ struct GameState {
     float shake = 0.0f;
     int kills = 0;
     float dayNight = 0.0f;
+    bool builtAnyMiner = false;
+    bool builtAnyFurnace = false;
+    bool gotAnyPlate = false;
 };
 
 GameState g;
@@ -107,6 +110,11 @@ float starX[120], starY[120], starSpeed[120];
 Camera3D camera;
 float camAngle = 0.0f;
 float camDist = 22.0f;
+char hintMsg[160] = "";
+float hintTimer = 0.0f;
+
+const int TOOLBAR_H = 110;
+const int TOPBAR_H = 70;
 
 bool InBounds(int x, int z) { return x >= 0 && z >= 0 && x < COLS && z < ROWS; }
 
@@ -132,6 +140,11 @@ Color LerpColor(Color a, Color b, float t) {
         (unsigned char)(a.b + (b.b - a.b) * t),
         255
     };
+}
+
+void SetHint(const char* msg, float time = 3.0f) {
+    snprintf(hintMsg, sizeof(hintMsg), "%s", msg);
+    hintTimer = time;
 }
 
 void AddParticles(float x, float y, float z, int n, Color col, float spread, float life, bool grav = true) {
@@ -187,6 +200,7 @@ void SaveGame() {
     fwrite(&g, sizeof(GameState), 1, f);
     fclose(f);
     AddFloat(COLS / 2.0f, 3.0f, ROWS / 2.0f, "SAVED", GREEN);
+    SetHint("Game saved", 2.0f);
 }
 
 bool LoadGame() {
@@ -270,7 +284,8 @@ void SpawnWave() {
     g.waveActive = true;
     SetSoundVolume(sWave, volume);
     PlaySound(sWave);
-    AddFloat(COLS / 2.0f, 3.0f, ROWS / 2.0f, TextFormat("WAVE %d%s", g.wave, boss ? " BOSS!" : ""), boss ? RED : YELLOW);
+    AddFloat(COLS / 2.0f, 3.0f, ROWS / 2.0f, TextFormat("WAVE %d", g.wave), boss ? RED : YELLOW);
+    SetHint(boss ? "BOSS! Defend the base!" : "Wave incoming! Enemies go to base!", 3.0f);
 }
 
 void SpawnEnemy(bool boss = false) {
@@ -283,13 +298,10 @@ void SpawnEnemy(bool boss = false) {
         case 2: e.x = -pad; e.z = (float)GetRandomValue(0, ROWS); break;
         case 3: e.x = COLS + pad; e.z = (float)GetRandomValue(0, ROWS); break;
     }
-
     if (boss) {
         e.type = EnemyType::Boss;
         e.maxHp = e.hp = 300.0f + g.wave * 50.0f;
-        e.speed = 1.2f;
-        e.damage = 30;
-        e.reward = 10;
+        e.speed = 1.2f; e.damage = 30; e.reward = 10;
     } else {
         int r = GetRandomValue(0, 100);
         if (r < 60) {
@@ -365,13 +377,15 @@ void UpdateProduction(float dt) {
                     if (c.item == Item::IronOre) { g.ironPlates++; AddFloat(x + 0.5f, 1.5f, z + 0.5f, "+1 Fe", Color{220,220,230,255}); }
                     else { g.copperPlates++; AddFloat(x + 0.5f, 1.5f, z + 0.5f, "+1 Cu", Color{240,160,80,255}); }
                     c.item = Item::None;
+                    if (!g.gotAnyPlate) {
+                        g.gotAnyPlate = true;
+                        SetHint("Great! First plate produced!", 3.0f);
+                    }
                     AddParticles(x + 0.5f, 1.2f, z + 0.5f, 6, Color{255,180,80,255}, 1.5f, 0.5f, false);
                     SetSoundVolume(sSmelt, volume * 0.4f);
                     PlaySound(sSmelt);
                 }
             }
-            if (GetRandomValue(0, 100) < 2)
-                AddParticles(x + 0.5f, 1.0f, z + 0.5f, 1, Color{100,100,110,150}, 0.5f, 1.5f, false);
         }
     }
 
@@ -407,7 +421,6 @@ void UpdateTurrets(float dt) {
         c.timer += dt;
         float cx = x + 0.5f;
         float cz = z + 0.5f;
-
         Enemy* target = nullptr;
         float best = TURRET_RANGE;
         for (auto& e : enemies) {
@@ -448,7 +461,6 @@ void UpdateEnemies(float dt) {
         float d = sqrtf(dx * dx + dz * dz);
         if (d < 0.5f) continue;
         float nx = dx / d, nz = dz / d;
-
         int ex = (int)floorf(e.x + nx * 0.6f);
         int ez = (int)floorf(e.z + nz * 0.6f);
         bool attacked = false;
@@ -476,9 +488,7 @@ void UpdateEnemies(float dt) {
 void UpdateParticles(float dt) {
     for (int i = (int)particles.size() - 1; i >= 0; i--) {
         Particle& p = particles[i];
-        p.x += p.vx * dt;
-        p.y += p.vy * dt;
-        p.z += p.vz * dt;
+        p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
         if (p.gravity) p.vy -= 8.0f * dt;
         p.life -= dt;
         if (p.life <= 0) particles.erase(particles.begin() + i);
@@ -506,6 +516,7 @@ void UpdateWaves(float dt) {
                 AddScore(g.ironPlates + g.copperPlates, g.playTime, g.wave, g.kills);
             } else {
                 g.buildTime = 25.0f;
+                SetHint("Wave cleared! Prepare for next", 3.0f);
             }
         }
     } else if (g.wave < g.totalWaves) {
@@ -522,6 +533,7 @@ void Update(float dt) {
     g.playTime += dt;
     g.dayNight += dt * 0.015f;
     if (g.dayNight > 1.0f) g.dayNight = 0.0f;
+    if (hintTimer > 0) hintTimer -= dt;
     UpdateProduction(dt);
     UpdateTurrets(dt);
     UpdateEnemies(dt);
@@ -529,6 +541,12 @@ void Update(float dt) {
     UpdateWaves(dt);
     if (g.shake > 0) g.shake -= dt * 40;
     if (g.shake < 0) g.shake = 0;
+
+    if (!g.waveActive && g.wave == 0) {
+        if (!g.builtAnyMiner) SetHint("Press 1 and click on brown spot - that is ore", 1.0f);
+        else if (!g.gotAnyPlate) SetHint("Place miner > belt (2) > furnace (3). Tight together!", 1.0f);
+        else SetHint("Great! Place turrets (4) around base - 10 plates each", 1.0f);
+    }
 }
 
 Color CellColor(CellType t, OreKind k) {
@@ -565,23 +583,43 @@ Color EnemyColor(EnemyType t) {
 }
 
 void DrawGround() {
-    // Плоскость земли
     for (int z = 0; z < ROWS; z++) for (int x = 0; x < COLS; x++) {
         const Cell& c = g.grid[x][z];
         Color col = CellColor(c.type, c.oreKind);
         if (c.flash > 0) col = Color{ 255, 100, 100, 255 };
-
         Vector3 pos = { x + 0.5f, 0.0f, z + 0.5f };
         DrawCube(pos, 1.0f, 0.15f, 1.0f, col);
-        // Тёмная сетка
         DrawCubeWires(pos, 1.0f, 0.15f, 1.0f, Color{ 25, 30, 25, 255 });
     }
-
-    // Подсветка клетки под мышью
     if (InBounds(hoverX, hoverZ)) {
         Vector3 pos = { hoverX + 0.5f, 0.13f, hoverZ + 0.5f };
         DrawCubeWires(pos, 1.02f, 0.02f, 1.02f, YELLOW);
         DrawCube(pos, 1.0f, 0.02f, 1.0f, Color{ 255, 255, 100, 60 });
+
+        Cell& hc = g.grid[hoverX][hoverZ];
+        Color ghost = Color{ 255, 255, 255, 100 };
+        if (tool == CellType::Miner) {
+            if (hc.type == CellType::Ore && hc.oreAmount > 0) ghost = Color{ 255, 220, 80, 150 };
+            else ghost = Color{ 255, 60, 60, 100 };
+            DrawCylinder({ hoverX + 0.5f, 0.35f, hoverZ + 0.5f }, 0.35f, 0.4f, 0.4f, 12, ghost);
+        } else if (tool == CellType::Belt) {
+            if (hc.type == CellType::Empty) ghost = Color{ 150, 150, 255, 150 };
+            else ghost = Color{ 255, 60, 60, 100 };
+            DrawCube({ hoverX + 0.5f, 0.15f, hoverZ + 0.5f }, 0.9f, 0.1f, 0.9f, ghost);
+        } else if (tool == CellType::Furnace) {
+            if (hc.type == CellType::Empty) ghost = Color{ 255, 120, 120, 150 };
+            else ghost = Color{ 255, 60, 60, 100 };
+            DrawCube({ hoverX + 0.5f, 0.4f, hoverZ + 0.5f }, 0.75f, 0.8f, 0.75f, ghost);
+        } else if (tool == CellType::Turret) {
+            if (hc.type == CellType::Empty && g.ironPlates >= TURRET_COST) ghost = Color{ 120, 255, 120, 150 };
+            else if (hc.type == CellType::Empty) ghost = Color{ 255, 180, 60, 150 };
+            else ghost = Color{ 255, 60, 60, 100 };
+            DrawCylinder({ hoverX + 0.5f, 0.2f, hoverZ + 0.5f }, 0.4f, 0.4f, 0.3f, 12, ghost);
+        } else if (tool == CellType::Empty) {
+            if (hc.type == CellType::Ore || hc.type == CellType::Base) ghost = Color{ 255, 60, 60, 100 };
+            else ghost = Color{ 255, 100, 100, 150 };
+            DrawCubeWires({ hoverX + 0.5f, 0.2f, hoverZ + 0.5f }, 0.9f, 0.3f, 0.9f, RED);
+        }
     }
 }
 
@@ -597,33 +635,26 @@ void DrawOre(int x, int z, const Cell& c) {
 
 void DrawMiner(int x, int z, const Cell& c) {
     float bob = sinf(c.animT * 4.0f) * 0.05f;
-    // База
     DrawCylinder({ x + 0.5f, 0.25f, z + 0.5f }, 0.35f, 0.4f, 0.4f, 12, Color{ 90, 75, 30, 255 });
-    // Корпус
     DrawCube({ x + 0.5f, 0.55f + bob, z + 0.5f }, 0.6f, 0.4f, 0.6f, Color{ 210, 180, 60, 255 });
     DrawCubeWires({ x + 0.5f, 0.55f + bob, z + 0.5f }, 0.6f, 0.4f, 0.6f, Color{ 140, 110, 20, 255 });
-    // Стрелка направления
     Vector2 o = DirOff(c.dir);
     Vector3 tip = { x + 0.5f + o.x * 0.5f, 0.85f + bob, z + 0.5f + o.y * 0.5f };
     DrawSphere(tip, 0.1f, Color{ 255, 240, 100, 255 });
     DrawLine3D({ x + 0.5f, 0.85f, z + 0.5f }, tip, YELLOW);
-    // Мигающий огонёк
     float blink = 0.5f + 0.5f * sinf(c.animT * 6.0f);
     DrawSphere({ x + 0.5f, 0.85f, z + 0.5f }, 0.08f, Color{ 255, (unsigned char)(200 * blink + 55), 0, 255 });
 }
 
 void DrawBelt(int x, int z, const Cell& c) {
-    // Лента
     DrawCube({ x + 0.5f, 0.12f, z + 0.5f }, 0.9f, 0.06f, 0.9f, Color{ 60, 60, 70, 255 });
     DrawCubeWires({ x + 0.5f, 0.12f, z + 0.5f }, 0.9f, 0.06f, 0.9f, Color{ 30, 30, 40, 255 });
-    // Движущиеся точки
     Vector2 o = DirOff(c.dir);
     for (int i = 0; i < 3; i++) {
         float off = fmodf(c.beltAnim * 0.6f + i * 0.33f, 1.0f) - 0.5f;
         Vector3 p = { x + 0.5f + o.x * off, 0.18f, z + 0.5f + o.y * off };
         DrawSphere(p, 0.06f, Color{ 200, 200, 200, 255 });
     }
-    // Стрелка
     Vector3 tip = { x + 0.5f + o.x * 0.4f, 0.2f, z + 0.5f + o.y * 0.4f };
     DrawLine3D({ x + 0.5f, 0.2f, z + 0.5f }, tip, YELLOW);
 }
@@ -631,28 +662,23 @@ void DrawBelt(int x, int z, const Cell& c) {
 void DrawFurnace(int x, int z, const Cell& c) {
     DrawCube({ x + 0.5f, 0.4f, z + 0.5f }, 0.75f, 0.8f, 0.75f, Color{ 70, 45, 45, 255 });
     DrawCubeWires({ x + 0.5f, 0.4f, z + 0.5f }, 0.75f, 0.8f, 0.75f, Color{ 40, 25, 25, 255 });
-    // Топ
     DrawCube({ x + 0.5f, 0.82f, z + 0.5f }, 0.5f, 0.05f, 0.5f, Color{ 40, 30, 30, 255 });
-    // Огонь внутри
     if (c.item == Item::IronOre || c.item == Item::CopperOre) {
         float glow = 0.6f + 0.4f * sinf(c.animT * 8.0f);
         DrawSphere({ x + 0.5f, 0.9f, z + 0.5f }, 0.15f * glow, Color{ 255, 120, 30, 220 });
         DrawSphere({ x + 0.5f, 0.95f, z + 0.5f }, 0.08f, Color{ 255, 240, 150, 255 });
     }
-    // Труба
     DrawCylinder({ x + 0.7f, 0.9f, z + 0.3f }, 0.08f, 0.1f, 0.3f, 8, Color{ 50, 50, 55, 255 });
 }
 
 void DrawTurret(int x, int z, const Cell& c) {
     DrawCylinder({ x + 0.5f, 0.15f, z + 0.5f }, 0.4f, 0.45f, 0.3f, 12, Color{ 55, 90, 65, 255 });
     DrawCylinder({ x + 0.5f, 0.35f, z + 0.5f }, 0.3f, 0.3f, 0.25f, 12, Color{ 70, 120, 85, 255 });
-    // Ствол
     float ang = c.aimAngle;
     Vector3 base = { x + 0.5f, 0.55f, z + 0.5f };
     Vector3 tip = { base.x + cosf(ang) * 0.5f, base.y, base.z + sinf(ang) * 0.5f };
     DrawCylinderEx(base, tip, 0.09f, 0.07f, 8, Color{ 60, 60, 65, 255 });
     DrawSphere(tip, 0.09f, Color{ 40, 40, 45, 255 });
-    // Купол
     DrawSphere({ x + 0.5f, 0.5f, z + 0.5f }, 0.18f, Color{ 90, 130, 100, 255 });
 }
 
@@ -692,25 +718,15 @@ void DrawEnemies() {
         if (e.type == EnemyType::Fast) size = 0.3f;
         else if (e.type == EnemyType::Tank) size = 0.5f;
         else if (e.type == EnemyType::Boss) size = 0.8f;
-
         float bob = sinf(e.animT * 6.0f) * 0.08f;
         Color col = EnemyColor(e.type);
-
-        // Тень
         DrawSphere({ e.x, 0.05f, e.z }, size * 0.9f, Color{ 0, 0, 0, 80 });
-
-        // Тело
         DrawSphere({ e.x, 0.5f + bob, e.z }, size, col);
         DrawSphereWires({ e.x, 0.5f + bob, e.z }, size, 8, 8, Color{ 0, 0, 0, 150 });
-
-        // Глаза
-        float ez = e.z;
         Vector3 eye1 = { e.x - size * 0.4f, 0.6f + bob, e.z - size * 0.6f };
         Vector3 eye2 = { e.x + size * 0.4f, 0.6f + bob, e.z - size * 0.6f };
         DrawSphere(eye1, size * 0.15f, WHITE);
         DrawSphere(eye2, size * 0.15f, WHITE);
-
-        // HP bar над врагом
         float pct = e.hp / e.maxHp;
         float barW = size * 2.2f;
         float barY = 1.2f + size + bob;
@@ -740,9 +756,134 @@ void DrawFloats3D() {
     }
 }
 
+void DrawToolIcon(CellType t, int cx, int cy, int size, Color col) {
+    switch (t) {
+        case CellType::Miner:
+            DrawCylinder({ (float)cx, (float)cy, 0.0f }, size * 0.35f, size * 0.4f, size * 0.4f, 12, col);
+            break;
+        case CellType::Belt:
+            DrawRectangle(cx - size / 2, cy - size / 4, size, size / 2, col);
+            DrawTriangle({ (float)(cx + size / 2), (float)cy },
+                         { (float)(cx + size / 2 - size / 3), (float)(cy - size / 3) },
+                         { (float)(cx + size / 2 - size / 3), (float)(cy + size / 3) }, YELLOW);
+            break;
+        case CellType::Furnace:
+            DrawRectangle(cx - size / 2, cy - size / 2, size, size, col);
+            DrawRectangle(cx - size / 3, cy - size / 3, size / 3, size / 3, YELLOW);
+            break;
+        case CellType::Turret:
+            DrawCircle(cx, cy, size / 2, col);
+            DrawRectangle(cx - size / 2, cy - 3, size, 6, DARKGRAY);
+            break;
+        case CellType::Empty:
+            DrawLineEx({ (float)(cx - size / 2), (float)(cy - size / 2) }, { (float)(cx + size / 2), (float)(cy + size / 2) }, 4, col);
+            DrawLineEx({ (float)(cx + size / 2), (float)(cy - size / 2) }, { (float)(cx - size / 2), (float)(cy + size / 2) }, 4, col);
+            break;
+        default: break;
+    }
+}
+
+const int NUM_TOOLS = 5;
+struct ToolInfo { CellType type; const char* key; const char* name; int cost; };
+ToolInfo tools[NUM_TOOLS] = {
+    { CellType::Miner,   "1", "Miner",   0 },
+    { CellType::Belt,    "2", "Belt",    0 },
+    { CellType::Furnace, "3", "Furnace", 0 },
+    { CellType::Turret,  "4", "Turret",  10 },
+    { CellType::Empty,   "5", "Delete",  0 },
+};
+
+void DrawToolbar() {
+    int y0 = SCREEN_H - TOOLBAR_H;
+    DrawRectangle(0, y0, SCREEN_W, TOOLBAR_H, Color{ 18, 20, 26, 245 });
+    DrawRectangle(0, y0, SCREEN_W, 2, Color{ 100, 100, 140, 255 });
+
+    Vector2 mouse = GetMousePosition();
+    int btnW = 130, btnH = 85;
+    int gap = 12;
+    int totalW = NUM_TOOLS * btnW + (NUM_TOOLS - 1) * gap;
+    int startX = SCREEN_W / 2 - totalW / 2;
+    int btnY = y0 + 12;
+
+    for (int i = 0; i < NUM_TOOLS; i++) {
+        int x = startX + i * (btnW + gap);
+        Rectangle r{ (float)x, (float)btnY, (float)btnW, (float)btnH };
+        bool hover = CheckCollisionPointRec(mouse, r);
+        bool selected = (tool == tools[i].type);
+
+        Color bg = Color{ 45, 48, 60, 255 };
+        if (selected) bg = Color{ 90, 120, 180, 255 };
+        else if (hover) bg = Color{ 70, 75, 95, 255 };
+
+        DrawRectangleRec(r, bg);
+        DrawRectangleLinesEx(r, selected ? 3 : 2, selected ? YELLOW : (hover ? LIGHTGRAY : Color{ 80, 80, 100, 255 }));
+
+        Color icoCol = Color{ 220, 220, 230, 255 };
+        if (tools[i].type == CellType::Miner) icoCol = Color{ 220, 190, 70, 255 };
+        if (tools[i].type == CellType::Belt)  icoCol = Color{ 100, 100, 120, 255 };
+        if (tools[i].type == CellType::Furnace) icoCol = Color{ 200, 80, 60, 255 };
+        if (tools[i].type == CellType::Turret) icoCol = Color{ 90, 160, 110, 255 };
+        if (tools[i].type == CellType::Empty) icoCol = Color{ 220, 80, 80, 255 };
+        DrawToolIcon(tools[i].type, x + 35, btnY + 35, 30, icoCol);
+
+        int kw = 22;
+        DrawRectangle(x + 6, btnY + 6, kw, kw, Color{ 20, 20, 30, 255 });
+        DrawRectangleLines(x + 6, btnY + 6, kw, kw, YELLOW);
+        DrawText(tools[i].key, x + 12, btnY + 9, 16, YELLOW);
+
+        int nameW = MeasureText(tools[i].name, 18);
+        DrawText(tools[i].name, x + btnW / 2 - nameW / 2, btnY + 55, 18, RAYWHITE);
+
+        if (tools[i].cost > 0) {
+            Color canAfford = (g.ironPlates >= tools[i].cost) ? GREEN : RED;
+            const char* price = TextFormat("%d Fe", tools[i].cost);
+            int pw = MeasureText(price, 14);
+            DrawText(price, x + btnW / 2 - pw / 2, btnY + btnH - 18, 14, canAfford);
+        }
+
+        if (hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (tools[i].type == CellType::Turret && g.ironPlates < TURRET_COST) {
+                SetHint("Not enough plates! Need 10 Fe", 2.0f);
+            } else {
+                tool = tools[i].type;
+                SetSoundVolume(sClick, volume * 0.5f);
+                PlaySound(sClick);
+            }
+        }
+    }
+}
+
+void DrawTopBar() {
+    DrawRectangle(0, 0, SCREEN_W, TOPBAR_H, Color{ 18, 20, 26, 220 });
+    DrawRectangle(0, TOPBAR_H - 2, SCREEN_W, 2, Color{ 100, 100, 140, 255 });
+
+    DrawCircle(40, 22, 12, Color{ 220, 220, 230, 255 });
+    DrawText(TextFormat("Iron: %d", g.ironPlates), 60, 12, 22, RAYWHITE);
+
+    DrawCircle(220, 22, 12, Color{ 240, 170, 90, 255 });
+    DrawText(TextFormat("Copper: %d", g.copperPlates), 240, 12, 22, RAYWHITE);
+
+    DrawText(TextFormat("Kills: %d", g.kills), 400, 12, 22, RED);
+    DrawText(TextFormat("Lv.%d", g.minerLevel), 520, 12, 22, YELLOW);
+
+    DrawText("Base:", 620, 12, 20, LIGHTGRAY);
+    DrawRectangle(690, 14, 160, 20, Color{ 40, 40, 40, 255 });
+    Color hpCol = g.baseHP > g.baseMaxHP / 2 ? GREEN : (g.baseHP > g.baseMaxHP / 4 ? YELLOW : RED);
+    DrawRectangle(690, 14, (int)(160.0f * g.baseHP / g.baseMaxHP), 20, hpCol);
+    DrawRectangleLines(690, 14, 160, 20, WHITE);
+    DrawText(TextFormat("%d", g.baseHP), 860, 12, 20, WHITE);
+
+    if (g.waveActive) {
+        DrawText(TextFormat("WAVE %d", g.wave), 970, 12, 26, RED);
+        DrawText(TextFormat("Enemies: %d", (int)enemies.size() + g.enemiesToSpawn), 1120, 15, 18, RAYWHITE);
+    } else {
+        DrawText(TextFormat("Next wave: %.0f s", g.buildTime), 950, 12, 22, YELLOW);
+    }
+}
+
 void DrawMinimap() {
     int mw = COLS * 4, mh = ROWS * 4;
-    int mx = SCREEN_W - mw - 15, my = 15;
+    int mx = SCREEN_W - mw - 15, my = TOPBAR_H + 15;
     DrawRectangle(mx - 3, my - 3, mw + 6, mh + 6, Color{ 0, 0, 0, 180 });
     for (int z = 0; z < ROWS; z++) for (int x = 0; x < COLS; x++) {
         Color c = CellColor(g.grid[x][z].type, g.grid[x][z].oreKind);
@@ -753,55 +894,32 @@ void DrawMinimap() {
         DrawRectangle(mx + (int)(e.x * 4) - 1, my + (int)(e.z * 4) - 1, 4, 4, RED);
 }
 
-void DrawHUD() {
-    int y0 = SCREEN_H - 100;
-    DrawRectangle(0, y0, SCREEN_W, 100, Color{ 15, 18, 25, 230 });
-    DrawRectangle(0, y0, SCREEN_W, 2, Color{ 100, 100, 140, 255 });
-
-    DrawCircle(30, y0 + 30, 12, Color{ 220, 220, 230, 255 });
-    DrawText(TextFormat("%d", g.ironPlates), 50, y0 + 18, 26, RAYWHITE);
-
-    DrawCircle(180, y0 + 30, 12, Color{ 240, 170, 90, 255 });
-    DrawText(TextFormat("%d", g.copperPlates), 200, y0 + 18, 26, RAYWHITE);
-
-    DrawText(TextFormat("Wave: %d/%d", g.wave, g.totalWaves), 330, y0 + 18, 24, RAYWHITE);
-    DrawText(TextFormat("Kills: %d", g.kills), 500, y0 + 18, 24, RED);
-    DrawText(TextFormat("Lv.%d", g.minerLevel), 660, y0 + 18, 24, YELLOW);
-
-    // HP базы
-    DrawText("Base:", 30, y0 + 60, 20, LIGHTGRAY);
-    DrawRectangle(100, y0 + 62, 240, 22, Color{ 40, 40, 40, 255 });
-    Color hpCol = g.baseHP > g.baseMaxHP / 2 ? GREEN : (g.baseHP > g.baseMaxHP / 4 ? YELLOW : RED);
-    DrawRectangle(100, y0 + 62, (int)(240.0f * g.baseHP / g.baseMaxHP), 22, hpCol);
-    DrawRectangleLines(100, y0 + 62, 240, 22, WHITE);
-    DrawText(TextFormat("%d/%d", g.baseHP, g.baseMaxHP), 350, y0 + 62, 20, WHITE);
-
-    if (!g.waveActive && g.wave < g.totalWaves)
-        DrawText(TextFormat("Next wave: %.0fs", g.buildTime), 600, y0 + 62, 24, YELLOW);
-    else if (g.waveActive)
-        DrawText(TextFormat("Enemies: %d", (int)enemies.size() + g.enemiesToSpawn), 600, y0 + 62, 24, RED);
-
-    DrawText("1-Miner 2-Belt 3-Furnace 4-Turret 5-Del R-Rot U-Upg P-Pause Q/E-Rot-Cam Wheel-Zoom F5/F9 ESC", 20, y0 + 90, 14, GRAY);
+void DrawHint() {
+    if (hintTimer <= 0) return;
+    int th = 44;
+    int ty = TOPBAR_H + 10;
+    int tw = MeasureText(hintMsg, 22) + 40;
+    int tx = SCREEN_W / 2 - tw / 2;
+    DrawRectangle(tx, ty, tw, th, Color{ 30, 40, 70, 230 });
+    DrawRectangleLines(tx, ty, tw, th, YELLOW);
+    int tW = MeasureText(hintMsg, 22);
+    DrawText(hintMsg, SCREEN_W / 2 - tW / 2, ty + 10, 22, RAYWHITE);
 }
 
 void UpdateCamera() {
     if (IsKeyDown(KEY_Q)) camAngle -= 1.5f * GetFrameTime();
     if (IsKeyDown(KEY_E)) camAngle += 1.5f * GetFrameTime();
-
     float wheel = GetMouseWheelMove();
     camDist -= wheel * 1.5f;
     if (camDist < 10.0f) camDist = 10.0f;
     if (camDist > 45.0f) camDist = 45.0f;
-
     float cx = COLS / 2.0f + sinf(camAngle) * camDist * 0.5f;
     float cz = ROWS / 2.0f + cosf(camAngle) * camDist * 0.5f;
     float cy = camDist * 0.9f;
-
     if (g.shake > 0) {
         cx += (float)GetRandomValue(-10, 10) / 100.0f * g.shake / 15.0f;
         cz += (float)GetRandomValue(-10, 10) / 100.0f * g.shake / 15.0f;
     }
-
     camera.position = { cx, cy, cz };
     camera.target = { COLS / 2.0f, 0.0f, ROWS / 2.0f };
     camera.up = { 0, 1, 0 };
@@ -814,11 +932,7 @@ void UpdateMousePick() {
     if (fabsf(ray.direction.y) > 0.001f) {
         float t = -ray.position.y / ray.direction.y;
         if (t > 0) {
-            Vector3 hit = {
-                ray.position.x + ray.direction.x * t,
-                0,
-                ray.position.z + ray.direction.z * t
-            };
+            Vector3 hit = { ray.position.x + ray.direction.x * t, 0, ray.position.z + ray.direction.z * t };
             hoverX = (int)floorf(hit.x);
             hoverZ = (int)floorf(hit.z);
             if (!InBounds(hoverX, hoverZ)) { hoverX = -1; hoverZ = -1; }
@@ -853,20 +967,17 @@ void DrawStars() {
 void DrawMenu() {
     ClearBackground({ 12, 12, 22, 255 });
     DrawStars();
-
     const char* title = "FACTORIO 3D";
     int size = 76;
     int tw = MeasureText(title, size);
     DrawText(title, SCREEN_W / 2 - tw / 2 + 4, 74, size, Color{ 0, 0, 0, 150 });
     DrawText(title, SCREEN_W / 2 - tw / 2, 70, size, ORANGE);
-
     DrawText("build | defend | survive", SCREEN_W / 2 - 130, 160, 22, GRAY);
 
     int bw = 320, bh = 55, bx = SCREEN_W / 2 - bw / 2;
     int y = 220;
     if (Button({ (float)bx, (float)y, (float)bw, (float)bh }, "NEW GAME")) {
-        GenerateMap();
-        scene = Scene::Game;
+        GenerateMap(); scene = Scene::Game;
     }
     y += 70;
     if (SaveExists()) {
@@ -876,18 +987,15 @@ void DrawMenu() {
     } else {
         DrawRectangle(bx, y, bw, bh, { 30, 30, 40, 255 });
         DrawRectangleLines(bx, y, bw, bh, DARKGRAY);
-        int t2 = MeasureText("CONTINUE", 26);
-        DrawText("CONTINUE", bx + bw / 2 - t2 / 2, y + bh / 2 - 13, 26, DARKGRAY);
+        int t2 = MeasureText("CONTINUE", 24);
+        DrawText("CONTINUE", bx + bw / 2 - t2 / 2, y + bh / 2 - 12, 24, DARKGRAY);
     }
     y += 70;
     if (Button({ (float)bx, (float)y, (float)bw, (float)bh }, "RECORDS")) scene = Scene::Records;
     y += 70;
     if (Button({ (float)bx, (float)y, (float)bw, (float)bh }, "SETTINGS")) scene = Scene::Settings;
     y += 70;
-    if (Button({ (float)bx, (float)y, (float)bw, (float)bh }, "EXIT")) {
-        CloseWindow();
-        exit(0);
-    }
+    if (Button({ (float)bx, (float)y, (float)bw, (float)bh }, "EXIT")) { CloseWindow(); exit(0); }
 }
 
 void DrawSettings() {
@@ -902,10 +1010,11 @@ void DrawSettings() {
     if (Button({ 720, 163, 60, 45 }, "-")) volume = fmaxf(0.0f, volume - 0.1f);
 
     DrawText("Controls:", 320, 250, 24, YELLOW);
-    DrawText("1 - Miner   2 - Belt   3 - Furnace   4 - Turret   5 - Delete", 320, 280, 20, LIGHTGRAY);
-    DrawText("R - Rotate   U - Upgrade Miner   P - Pause", 320, 305, 20, LIGHTGRAY);
-    DrawText("Q / E - Rotate camera   Wheel - Zoom", 320, 330, 20, LIGHTGRAY);
-    DrawText("F5 - Save   F9 - Load   ESC - Menu", 320, 355, 20, LIGHTGRAY);
+    DrawText("1-4 - select building, 5 - delete", 320, 280, 20, LIGHTGRAY);
+    DrawText("R - rotate, RMB - rotate placed", 320, 305, 20, LIGHTGRAY);
+    DrawText("U - upgrade miner (5 plates)", 320, 330, 20, LIGHTGRAY);
+    DrawText("Q / E - rotate camera, wheel - zoom", 320, 355, 20, LIGHTGRAY);
+    DrawText("F5 - save, F9 - load, ESC - menu", 320, 380, 20, LIGHTGRAY);
 
     if (Button({ (float)(SCREEN_W / 2 - 100), (float)(SCREEN_H - 100), 200, 50 }, "BACK"))
         scene = Scene::Menu;
@@ -917,18 +1026,16 @@ void DrawRecords() {
     const char* t = "RECORDS";
     int tw = MeasureText(t, 44);
     DrawText(t, SCREEN_W / 2 - tw / 2, 60, 44, GOLD);
-
     if (numScores == 0) {
         DrawText("No records yet", SCREEN_W / 2 - 100, 250, 28, GRAY);
     } else {
-        DrawText("#   Plates   Time    Waves   Kills", 300, 160, 24, YELLOW);
+        DrawText("#   Plates   Time    Waves   Kills", 320, 160, 24, YELLOW);
         for (int i = 0; i < numScores; i++) {
-            DrawText(TextFormat("%d      %d     %.1f      %d      %d",
+            DrawText(TextFormat("%d      %d      %.1f       %d      %d",
                 i + 1, scores[i].plates, scores[i].time, scores[i].waves, scores[i].kills),
-                300, 210 + i * 40, 24, RAYWHITE);
+                320, 210 + i * 40, 24, RAYWHITE);
         }
     }
-
     if (Button({ (float)(SCREEN_W / 2 - 100), (float)(SCREEN_H - 100), 200, 50 }, "BACK"))
         scene = Scene::Menu;
 }
@@ -936,7 +1043,6 @@ void DrawRecords() {
 void DrawEndScreen(bool win) {
     ClearBackground(win ? Color{ 20, 50, 25, 255 } : Color{ 50, 15, 15, 255 });
     DrawStars();
-
     const char* t = win ? "VICTORY!" : "DEFEAT";
     int size = 80;
     int tw = MeasureText(t, size);
@@ -959,6 +1065,7 @@ void DrawEndScreen(bool win) {
 
 int main() {
     InitWindow(SCREEN_W, SCREEN_H, "Factorio 3D");
+    SetExitKey(KEY_NULL);
     InitAudioDevice();
     SetTargetFPS(60);
 
@@ -986,52 +1093,63 @@ int main() {
             UpdateCamera();
             UpdateMousePick();
 
-            if (IsKeyPressed(KEY_ONE))   tool = CellType::Miner;
-            if (IsKeyPressed(KEY_TWO))   tool = CellType::Belt;
-            if (IsKeyPressed(KEY_THREE)) tool = CellType::Furnace;
-            if (IsKeyPressed(KEY_FOUR))  tool = CellType::Turret;
-            if (IsKeyPressed(KEY_FIVE))  tool = CellType::Empty;
+            if (IsKeyPressed(KEY_ONE))   { tool = CellType::Miner;   SetSoundVolume(sClick, volume * 0.5f); PlaySound(sClick); }
+            if (IsKeyPressed(KEY_TWO))   { tool = CellType::Belt;    SetSoundVolume(sClick, volume * 0.5f); PlaySound(sClick); }
+            if (IsKeyPressed(KEY_THREE)) { tool = CellType::Furnace; SetSoundVolume(sClick, volume * 0.5f); PlaySound(sClick); }
+            if (IsKeyPressed(KEY_FOUR))  {
+                if (g.ironPlates >= TURRET_COST) { tool = CellType::Turret; SetSoundVolume(sClick, volume * 0.5f); PlaySound(sClick); }
+                else SetHint("Turret needs 10 iron plates!", 2.0f);
+            }
+            if (IsKeyPressed(KEY_FIVE))  { tool = CellType::Empty;   SetSoundVolume(sClick, volume * 0.5f); PlaySound(sClick); }
             if (IsKeyPressed(KEY_R)) buildDir = (Dir)(((int)buildDir + 1) % 4);
             if (IsKeyPressed(KEY_P)) g.paused = !g.paused;
             if (IsKeyPressed(KEY_ESCAPE)) scene = Scene::Menu;
             if (IsKeyPressed(KEY_F5)) SaveGame();
-            if (IsKeyPressed(KEY_F9)) LoadGame();
-            if (IsKeyPressed(KEY_U) && g.ironPlates >= 5) {
-                g.ironPlates -= 5;
-                g.minerLevel++;
-                AddFloat(COLS / 2.0f, 3.0f, ROWS / 2.0f, "MINER UPGRADED!", YELLOW);
-                SetSoundVolume(sBuild, volume);
-                PlaySound(sBuild);
+            if (IsKeyPressed(KEY_F9)) { if (LoadGame()) SetHint("Game loaded", 2.0f); }
+            if (IsKeyPressed(KEY_U)) {
+                if (g.ironPlates >= 5) {
+                    g.ironPlates -= 5;
+                    g.minerLevel++;
+                    AddFloat(COLS / 2.0f, 3.0f, ROWS / 2.0f, "MINER UPGRADED!", YELLOW);
+                    SetHint(TextFormat("Upgrade! Miner level: %d", g.minerLevel), 2.0f);
+                    SetSoundVolume(sBuild, volume);
+                    PlaySound(sBuild);
+                } else {
+                    SetHint("Upgrade needs 5 plates", 2.0f);
+                }
             }
 
             if (hoverX >= 0 && hoverZ >= 0) {
                 Cell& c = g.grid[hoverX][hoverZ];
                 if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                     bool placed = false;
+                    const char* failReason = nullptr;
                     if (tool == CellType::Empty) {
                         if (c.type != CellType::Ore && c.type != CellType::Base) {
                             c.type = CellType::Empty; c.item = Item::None;
                             c.timer = 0; c.oreAmount = 0; c.oreKind = OreKind::None;
                             placed = true;
-                        }
+                        } else failReason = "Cannot delete this";
                     }
                     else if (tool == CellType::Miner) {
                         if (c.type == CellType::Ore && c.oreAmount > 0) {
                             c.type = CellType::Miner; c.dir = buildDir;
                             c.hp = c.maxHp = 50; placed = true;
-                        }
+                            if (!g.builtAnyMiner) { g.builtAnyMiner = true; SetHint("Miner ready! Place belt (2) in arrow direction", 4.0f); }
+                        } else failReason = "Miner only on ore (brown)";
                     }
                     else if (tool == CellType::Belt) {
                         if (c.type == CellType::Empty) {
                             c.type = CellType::Belt; c.dir = buildDir;
                             c.hp = c.maxHp = 20; placed = true;
-                        }
+                        } else failReason = "Belt only on empty cell";
                     }
                     else if (tool == CellType::Furnace) {
                         if (c.type == CellType::Empty) {
                             c.type = CellType::Furnace;
                             c.hp = c.maxHp = 50; placed = true;
-                        }
+                            if (!g.builtAnyFurnace) { g.builtAnyFurnace = true; SetHint("Furnace ready! Watch Iron counter", 4.0f); }
+                        } else failReason = "Furnace only on empty cell";
                     }
                     else if (tool == CellType::Turret) {
                         if (c.type == CellType::Empty && g.ironPlates >= TURRET_COST) {
@@ -1039,12 +1157,15 @@ int main() {
                             c.type = CellType::Turret;
                             c.hp = c.maxHp = 100; placed = true;
                             AddFloat(hoverX + 0.5f, 1.5f, hoverZ + 0.5f, "-10 Fe", RED);
-                        }
+                        } else if (c.type != CellType::Empty) failReason = "Cell is occupied";
+                        else failReason = "Need 10 iron plates";
                     }
                     if (placed) {
                         SetSoundVolume(sBuild, volume * 0.4f);
                         PlaySound(sBuild);
                         AddParticles(hoverX + 0.5f, 0.3f, hoverZ + 0.5f, 6, WHITE, 1.5f, 0.25f, false);
+                    } else if (failReason) {
+                        SetHint(failReason, 2.0f);
                     }
                 }
                 if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
@@ -1066,19 +1187,13 @@ int main() {
         else if (scene == Scene::Lose) DrawEndScreen(false);
         else if (scene == Scene::Game) {
             BeginMode3D(camera);
-
-            // Небо-градиент: рисуем огромную сферу вокруг
-            DrawSphere({ camera.position.x, camera.position.y, camera.position.z }, 300.0f,
-                       Color{ 30, 40, 70, 255 });
-
+            DrawSphere({ camera.position.x, camera.position.y, camera.position.z }, 300.0f, Color{ 30, 40, 70, 255 });
             DrawGround();
             DrawBuildings();
             DrawEnemies();
             DrawParticles3D();
-
             EndMode3D();
 
-            // День/ночь
             float nightFactor = 0.0f;
             float dn = g.dayNight;
             if (dn < 0.25f) nightFactor = (0.25f - dn) / 0.25f * 0.6f;
@@ -1087,13 +1202,15 @@ int main() {
                 DrawRectangle(0, 0, SCREEN_W, SCREEN_H, Color{ 10, 10, 40, (unsigned char)(nightFactor * 255) });
 
             DrawFloats3D();
+            DrawTopBar();
             DrawMinimap();
-            DrawHUD();
+            DrawHint();
+            DrawToolbar();
 
             if (g.paused) {
                 DrawRectangle(0, 0, SCREEN_W, SCREEN_H, { 0, 0, 0, 150 });
-                DrawText("PAUSE", SCREEN_W / 2 - 60, SCREEN_H / 2 - 20, 40, YELLOW);
-                DrawText("Press P to continue", SCREEN_W / 2 - 100, SCREEN_H / 2 + 30, 18, LIGHTGRAY);
+                DrawText("PAUSE", SCREEN_W / 2 - 70, SCREEN_H / 2 - 30, 44, YELLOW);
+                DrawText("Press P to continue", SCREEN_W / 2 - 100, SCREEN_H / 2 + 35, 20, LIGHTGRAY);
             }
         }
 
